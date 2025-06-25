@@ -1,0 +1,79 @@
+# Baseline CNN Configuration for CausalXray
+experiment_name: "baseline_cnn"
+output_dir: "./experiments"
+log_dir: "./logs"
+checkpoint_dir: "./checkpoints"
+device: "cuda"
+random_seed: 42
+
+model:
+  backbone: "densenet121"
+  pretrained: true
+  num_classes: 2
+  feature_dims: [1024, 512, 256]
+  dropout_rate: 0.3
+
+causal:
+  confounders: {}  # No causal components for baseline
+  hidden_dims: [512, 256]
+  dropout_rate: 0.3
+  use_variational: false
+  use_domain_adaptation: false
+  num_domains: 3
+  use_causal_graph: false
+
+training:
+  batch_size: 32
+  num_epochs: 100
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  optimizer: "adam"
+  scheduler: "cosine"
+  grad_clip: 1.0
+
+  # No progressive training for baseline
+  progressive_training: false
+  phase_epochs: [100]
+
+  loss_weights:
+    classification: 1.0
+    disentanglement: 0.0
+    domain: 0.0
+    attribution: 0.0
+
+  early_stopping: true
+  patience: 20
+  min_delta: 0.0001
+
+data:
+  data_dir: "./data"
+  datasets: ["nih"]
+  image_size: [224, 224]
+  normalize: true
+  augmentation: true
+  num_workers: 4
+  pin_memory: true
+
+# Loss configuration
+loss:
+  focal_alpha: 1.0
+  focal_gamma: 2.0
+  weights:
+    classification: 1.0
+    disentanglement: 0.0
+    domain: 0.0
+    attribution: 0.0
+
+# Optimizer configuration
+optimizer:
+  type: "adam"
+  lr: 0.001
+  weight_decay: 0.0001
+  betas: [0.9, 0.999]
+
+# Scheduler configuration
+scheduler:
+  enabled: true
+  type: "cosine"
+  T_max: 100
+  eta_min: 0.000001

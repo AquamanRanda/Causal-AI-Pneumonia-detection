@@ -1,0 +1,129 @@
+# Cross-Domain Evaluation Configuration for CausalXray
+experiment_name: "causalxray_cross_domain"
+output_dir: "./experiments"
+log_dir: "./logs"
+checkpoint_dir: "./checkpoints"
+device: "cuda"
+random_seed: 42
+
+model:
+  backbone: "densenet121"
+  pretrained: true
+  num_classes: 2
+  feature_dims: [1024, 512, 256]
+  dropout_rate: 0.3
+
+causal:
+  confounders:
+    age: 1
+    sex: 2
+    scanner_type: 5
+    hospital_type: 3
+  hidden_dims: [512, 256]
+  dropout_rate: 0.3
+  use_variational: true
+  use_domain_adaptation: true
+  num_domains: 3  # NIH, RSNA, Pediatric
+  use_causal_graph: true
+
+  # Enhanced causal graph for cross-domain
+  graph_variables: ["image_features", "age", "sex", "scanner_type", "hospital_type", "pneumonia"]
+  causal_graph:
+    image_features: ["scanner_type", "hospital_type"]
+    age: []
+    sex: []
+    scanner_type: []
+    hospital_type: []
+    pneumonia: ["image_features", "age", "sex"]
+  variable_dims:
+    image_features: 256
+    age: 1
+    sex: 2
+    scanner_type: 5
+    hospital_type: 3
+    pneumonia: 2
+
+training:
+  batch_size: 24  # Reduced for multi-domain training
+  num_epochs: 200
+  learning_rate: 0.0005
+  weight_decay: 0.0001
+  optimizer: "adamw"
+  scheduler: "cosine"
+  grad_clip: 1.0
+
+  # Extended progressive training for cross-domain
+  progressive_training: true
+  phase_epochs: [70, 70, 60]
+
+  loss_weights:
+    classification: 1.0
+    disentanglement: 0.4
+    domain: 0.3
+    attribution: 0.2
+    graph: 0.3
+
+  early_stopping: true
+  patience: 30
+  min_delta: 0.0001
+
+data:
+  data_dir: "./data"
+  datasets: ["nih", "rsna", "pediatric"]
+  image_size: [224, 224]
+  normalize: true
+  augmentation: true
+  num_workers: 6
+  pin_memory: true
+
+# Enhanced loss configuration for domain robustness
+loss:
+  focal_alpha: 1.0
+  focal_gamma: 2.0
+  weights:
+    classification: 1.0
+    disentanglement: 0.4
+    domain: 0.3
+    attribution: 0.2
+
+  # Enhanced disentanglement for cross-domain
+  disentanglement:
+    beta_vae: 1.2
+    independence_weight: 0.15
+
+# Optimizer configuration
+optimizer:
+  type: "adamw"
+  lr: 0.0005
+  weight_decay: 0.0001
+  betas: [0.9, 0.999]
+
+# Scheduler configuration
+scheduler:
+  enabled: true
+  type: "cosine"
+  T_max: 200
+  eta_min: 0.0000001
+
+# Attribution configuration
+attribution:
+  patch_size: 16
+  attribution_methods: ["intervention", "counterfactual", "gradcam", "integrated_gradients"]
+
+# Cross-domain evaluation configuration
+cross_domain_evaluation:
+  source_datasets: ["nih"]
+  target_datasets: ["rsna", "pediatric"]
+  metrics: ["accuracy", "auc", "f1", "precision", "recall", "specificity"]
+
+  # Domain shift quantification
+  compute_domain_shift: true
+  shift_metrics: ["mmd", "wasserstein"]
+
+# Logging configuration
+logging:
+  use_tensorboard: true
+  use_wandb: true
+  wandb_config:
+    project: "causalxray"
+    tags: ["cross-domain", "pneumonia", "causal", "domain-adaptation"]
