@@ -1,7 +1,6 @@
 # CausalXray/tests/test_evaluation.py
 """Unit tests for evaluation metrics and evaluation pipeline in CausalXray."""
 
-import pytest
 import torch
 import numpy as np
 from causalxray.training.metrics import CausalMetrics

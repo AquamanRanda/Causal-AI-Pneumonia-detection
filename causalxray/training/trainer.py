@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
+from torch.utils.tensorboard.writer import SummaryWriter
 import numpy as np
 import os
 import time
@@ -22,7 +22,6 @@ from tqdm import tqdm
 from .losses import CausalLoss
 from .metrics import CausalMetrics
 from ..utils.logging import setup_logger
-from ..utils.config import load_config
 
 
 class CausalTrainer:
@@ -110,7 +109,7 @@ class CausalTrainer:
         else:
             raise ValueError(f"Unsupported optimizer type: {optimizer_type}")
 
-    def _setup_scheduler(self) -> Optional[optim.lr_scheduler._LRScheduler]:
+    def _setup_scheduler(self) -> Optional[Any]:
         """Setup learning rate scheduler."""
         scheduler_config = self.config.get('scheduler', {})
         if not scheduler_config.get('enabled', False):
@@ -135,8 +134,7 @@ class CausalTrainer:
                 self.optimizer,
                 mode='max',
                 factor=scheduler_config.get('factor', 0.5),
-                patience=scheduler_config.get('patience', 10),
-                verbose=True
+                patience=scheduler_config.get('patience', 10)
             )
         else:
             raise ValueError(f"Unsupported scheduler type: {scheduler_type}")
@@ -169,8 +167,10 @@ class CausalTrainer:
 
             # Determine training phase
             phase = self._get_training_phase(epoch)
-            if self.model.training_phase != phase:
-                self.model.set_training_phase(phase)
+            # type: ignore for model attributes
+            if getattr(self.model, 'training_phase', None) != phase:
+                if hasattr(self.model, 'set_training_phase'):
+                    self.model.set_training_phase(phase)  # type: ignore
                 self.logger.info(f"Switched to training phase: {phase}")
 
             # Training step
@@ -234,10 +234,11 @@ class CausalTrainer:
             outputs = self.model(images, confounders=confounders)
 
             # Compute loss
+            # type: ignore for model method
             loss_dict = self.model.compute_loss(
                 outputs, labels, confounders, 
                 loss_weights=self.config.get('loss_weights', {})
-            )
+            )  # type: ignore
 
             total_loss = loss_dict['total_loss']
 
@@ -297,10 +298,11 @@ class CausalTrainer:
                 outputs = self.model(images, confounders=confounders)
 
                 # Compute loss
+                # type: ignore for model method
                 loss_dict = self.model.compute_loss(
                     outputs, labels, confounders,
                     loss_weights=self.config.get('loss_weights', {})
-                )
+                )  # type: ignore
 
                 # Compute metrics
                 batch_metrics = self.metrics.compute_batch_metrics(
@@ -327,7 +329,8 @@ class CausalTrainer:
             np.array(all_labels)
         )
 
-        epoch_metrics.update(epoch_level_metrics)
+        # Only update with float values
+        epoch_metrics.update({k: float(v) if not isinstance(v, float) else v for k, v in epoch_level_metrics.items() if isinstance(v, (float, int, np.floating))})
 
         return dict(epoch_metrics)
 
@@ -452,8 +455,8 @@ class ProgressiveTrainer(CausalTrainer):
 
     def _train_epoch(self) -> Dict[str, float]:
         """Enhanced training epoch with phase-specific optimizations."""
-        current_phase = self.model.training_phase
-        phase_config = self.phase_configs.get(current_phase, {})
+        current_phase = getattr(self.model, 'training_phase', 'backbone')
+        phase_config = self.phase_configs.get(str(current_phase), {})
 
         # Adjust learning rate for phase
         lr_multiplier = phase_config.get('lr_multiplier', 1.0)

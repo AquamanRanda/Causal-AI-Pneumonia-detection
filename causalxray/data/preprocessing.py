@@ -9,10 +9,21 @@ protocols specific to chest radiography.
 import numpy as np
 import torch
 from PIL import Image, ImageEnhance, ImageFilter
-import cv2
-from typing import Tuple, Optional, Union, Dict, Any
-from skimage import exposure, filters, morphology
 import warnings
+
+try:
+    import cv2
+except ImportError:
+    cv2 = None
+    warnings.warn('cv2 is not installed. Some preprocessing functions will not work.')
+
+try:
+    from skimage import exposure, filters, morphology
+except ImportError:
+    exposure = filters = morphology = None
+    warnings.warn('scikit-image is not installed. Some preprocessing functions will not work.')
+
+from typing import Tuple, Optional, Union, Dict, Any
 
 
 class CausalPreprocessor:
@@ -114,6 +125,8 @@ class CausalPreprocessor:
         img_array = np.array(image)
 
         if len(img_array.shape) == 3:
+            if cv2 is None:
+                raise ImportError('cv2 is required for contrast enhancement but is not installed.')
             # RGB image - convert to LAB and apply CLAHE to L channel
             img_lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB)
 
@@ -127,6 +140,8 @@ class CausalPreprocessor:
             # Convert back to RGB
             img_enhanced = cv2.cvtColor(img_lab, cv2.COLOR_LAB2RGB)
         else:
+            if cv2 is None:
+                raise ImportError('cv2 is required for contrast enhancement but is not installed.')
             # Grayscale image
             clahe = cv2.createCLAHE(
                 clipLimit=self.clahe_params['clip_limit'],
@@ -141,6 +156,8 @@ class CausalPreprocessor:
         # Convert to numpy
         img_array = np.array(image)
 
+        if cv2 is None:
+            raise ImportError('cv2 is required for noise reduction but is not installed.')
         # Apply bilateral filtering for noise reduction while preserving edges
         if len(img_array.shape) == 3:
             # RGB image
@@ -205,8 +222,10 @@ class MedicalImageProcessor:
         Returns:
             Enhanced image with improved lung visibility
         """
+        if exposure is None:
+            raise ImportError('scikit-image is required for enhance_lung_regions but is not installed.')
         # Apply gamma correction to enhance lung regions
-        gamma_corrected = exposure.adjust_gamma(image, gamma=0.8)
+        gamma_corrected = exposure.adjust_gamma(image, gamma=int(0.8))
 
         # Apply sigmoid correction for better contrast
         sigmoid_corrected = exposure.adjust_sigmoid(gamma_corrected, cutoff=0.5, gain=10)
@@ -225,6 +244,8 @@ class MedicalImageProcessor:
         Returns:
             Cleaned image
         """
+        if filters is None or morphology is None:
+            raise ImportError('scikit-image is required for remove_background_artifacts but is not installed.')
         # Apply Otsu thresholding to separate foreground from background
         thresh = filters.threshold_otsu(image)
         binary = image > thresh * threshold
@@ -262,9 +283,12 @@ class MedicalImageProcessor:
 
         # Apply translation
         rows, cols = h, w
-        M = np.float32([[1, 0, translation[1]], [0, 1, translation[0]]])
-        normalized = cv2.warpAffine(image, M, (cols, rows))
-
+        # Ensure translation values are float and matrix is float32
+        M = np.array([[1, 0, float(translation[1])], [0, 1, float(translation[0])]], dtype=np.float32)
+        if cv2 is not None:
+            normalized = cv2.warpAffine(image, M, (cols, rows))
+        else:
+            raise ImportError('cv2 is required for normalization but is not installed.')
         return normalized
 
     @staticmethod
@@ -278,10 +302,14 @@ class MedicalImageProcessor:
         Returns:
             Tuple of (cropped_image, crop_info)
         """
+        if filters is None:
+            raise ImportError('scikit-image is required for detect_and_crop_lung_region but is not installed.')
         # Apply thresholding to find lung regions
         thresh = filters.threshold_otsu(image)
         binary = image > thresh * 0.3
 
+        if cv2 is None:
+            raise ImportError('cv2 is required for detect_and_crop_lung_region but is not installed.')
         # Find contours
         if len(image.shape) == 3:
             gray = cv2.cvtColor((image * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY)
@@ -341,24 +369,30 @@ class QualityAssessment:
 
         # Convert to grayscale if needed
         if len(image.shape) == 3:
+            if cv2 is None:
+                raise ImportError('cv2 is required for compute_image_quality_metrics but is not installed.')
             gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
         else:
             gray = image
 
-        # Signal-to-noise ratio
-        signal = np.mean(gray)
-        noise = np.std(gray)
+        # Ensure gray is a numpy ndarray
+        if not isinstance(gray, np.ndarray):
+            gray = np.array(gray)
+        signal = np.mean(gray)  # type: ignore
+        noise = np.std(gray)  # type: ignore
         metrics['snr'] = signal / (noise + 1e-8)
 
         # Contrast measure
-        metrics['contrast'] = np.std(gray)
+        metrics['contrast'] = np.std(gray)  # type: ignore
 
         # Sharpness (Laplacian variance)
+        if cv2 is None:
+            raise ImportError('cv2 is required for compute_image_quality_metrics but is not installed.')
         laplacian = cv2.Laplacian(gray, cv2.CV_64F)
         metrics['sharpness'] = laplacian.var()
 
         # Brightness
-        metrics['brightness'] = np.mean(gray)
+        metrics['brightness'] = np.mean(gray)  # type: ignore
 
         # Dynamic range
         metrics['dynamic_range'] = np.max(gray) - np.min(gray)

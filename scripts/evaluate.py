@@ -11,11 +11,11 @@ import json
 # Add package to path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from causalxray import CausalXray
-from causalxray.data import create_dataloader, NIHChestXray14, RSNAPneumonia, PediatricDataset
-from causalxray.data import CausalTransforms
-from causalxray.training import CausalMetrics
-from causalxray.utils import setup_logger
+from causalxray.models.backbone import CausalBackbone
+from causalxray.data.datasets import create_dataloader, NIHChestXray14, RSNAPneumonia, PediatricDataset
+from causalxray.data.transforms import CausalTransforms
+from causalxray.training.metrics import CausalMetrics
+from causalxray.utils.logging import setup_logger
 
 
 def main():
@@ -35,7 +35,11 @@ def main():
     logger = setup_logger('CausalXray_Evaluation', args.output_dir)
     
     # Load model
-    model, checkpoint = CausalXray.load_checkpoint(args.checkpoint, args.device)
+    # TODO: Specify the correct architecture and parameters as per your experiment
+    model = CausalBackbone(architecture="densenet121", pretrained=False, num_classes=2)
+    checkpoint = torch.load(args.checkpoint, map_location=args.device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.to(args.device)
     model.eval()
     
     logger.info(f"Loaded model from: {args.checkpoint}")

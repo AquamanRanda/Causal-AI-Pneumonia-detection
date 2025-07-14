@@ -9,7 +9,7 @@ causal hierarchy framework.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union, cast
 import numpy as np
 
 
@@ -58,10 +58,11 @@ class CausalHeads(nn.Module):
         )
 
         # Variational components for uncertainty quantification
+        self.variational_encoder: Optional[nn.ModuleDict] = None
         if use_variational:
-            self.variational_encoder = self._build_variational_encoder(
+            self.variational_encoder = cast(nn.ModuleDict, self._build_variational_encoder(
                 input_dim, hidden_dims[-1]
-            )
+            ))
 
     def _build_prediction_head(
         self, 
@@ -149,7 +150,7 @@ class CausalHeads(nn.Module):
         outputs = {}
 
         # Predict confounders
-        confounder_predictions = {}
+        confounder_predictions: Dict[str, torch.Tensor] = {}
         for confounder_name, head in self.confounder_heads.items():
             confounder_predictions[confounder_name] = head(features)
 
@@ -161,8 +162,10 @@ class CausalHeads(nn.Module):
 
         # Variational inference
         if self.use_variational:
-            mu = self.variational_encoder['mu'](features)
-            log_var = self.variational_encoder['log_var'](features)
+            assert self.variational_encoder is not None, "Variational encoder is not initialized."
+            variational_dict = cast(Dict[str, torch.Tensor], outputs['variational'])
+            mu = variational_dict['mu']  # type: ignore
+            log_var = variational_dict['log_var']  # type: ignore
 
             # Reparameterization trick
             std = torch.exp(0.5 * log_var)
@@ -181,7 +184,7 @@ class CausalHeads(nn.Module):
         self, 
         outputs: Dict[str, torch.Tensor],
         true_confounders: Dict[str, torch.Tensor]
-    ) -> Dict[str, torch.Tensor]:
+    ) -> Dict[str, torch.Tensor]:  # type: ignore
         """
         Compute disentanglement loss components.
 
@@ -196,6 +199,8 @@ class CausalHeads(nn.Module):
         total_loss = 0.0
 
         # Confounder prediction losses
+        if not isinstance(outputs['confounders'], dict):
+            raise TypeError("outputs['confounders'] must be a dict, got {}".format(type(outputs['confounders'])))
         for confounder_name, predictions in outputs['confounders'].items():
             if confounder_name in true_confounders:
                 true_values = true_confounders[confounder_name]
@@ -210,8 +215,10 @@ class CausalHeads(nn.Module):
 
         # Variational loss (KL divergence)
         if self.use_variational and 'variational' in outputs:
-            mu = outputs['variational']['mu']
-            log_var = outputs['variational']['log_var']
+            if not isinstance(outputs['variational'], dict):
+                raise TypeError("outputs['variational'] must be a dict, got {}".format(type(outputs['variational'])))
+            mu = outputs['variational']['mu']  # type: ignore
+            log_var = outputs['variational']['log_var']  # type: ignore
 
             kl_loss = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp())
             kl_loss = kl_loss / mu.size(0)  # Normalize by batch size

@@ -11,6 +11,10 @@ from torchvision.transforms import functional as TF
 import numpy as np
 import random
 from PIL import Image, ImageEnhance, ImageFilter
+# Ensure compatibility with all Pillow versions
+AFFINE = getattr(Image, 'AFFINE', 0)
+BILINEAR = getattr(Image, 'BILINEAR', 2)
+FLIP_LEFT_RIGHT = getattr(Image, 'FLIP_LEFT_RIGHT', 0)
 from typing import Dict, List, Optional, Tuple, Union, Callable, Any
 import cv2
 
@@ -128,19 +132,27 @@ class MedicalAugmentation:
                 -self.config.get('rotation_degrees', 10),
                 self.config.get('rotation_degrees', 10)
             )
-            image = TF.rotate(image, angle, fill=0)
+            image = image.rotate(angle, fillcolor=0)
 
         # Translation
         if random.random() < 0.4:
             max_translate = self.config.get('translation_ratio', 0.1)
-            translate_x = random.uniform(-max_translate, max_translate) * image.width
-            translate_y = random.uniform(-max_translate, max_translate) * image.height
-            image = TF.affine(image, angle=0, translate=[translate_x, translate_y], 
-                            scale=1.0, shear=0, fill=0)
+            translate_x = int(random.uniform(-max_translate, max_translate) * image.width)
+            translate_y = int(random.uniform(-max_translate, max_translate) * image.height)
+            # Use PIL Image.transform for translation
+            image = image.transform(
+                image.size,
+                Image.AFFINE,  # type: ignore
+                (1, 0, translate_x, 0, 1, translate_y),
+                resample=Image.BILINEAR,  # type: ignore
+                fillcolor=0
+            )
 
         # Horizontal flip (anatomically plausible for chest X-rays)
         if random.random() < self.config.get('horizontal_flip_prob', 0.5):
-            image = TF.hflip(image)
+            if not isinstance(image, Image.Image):
+                image = Image.fromarray(np.array(image))
+            image = image.transpose(Image.FLIP_LEFT_RIGHT)  # type: ignore
 
         # Elastic deformation (very subtle for medical images)
         if random.random() < self.config.get('elastic_transform_prob', 0.2):
@@ -221,13 +233,15 @@ class MedicalAugmentation:
         dy = np.random.randn(h, w) * 2.0
 
         # Smooth the displacement fields
+        if cv2 is None:
+            raise ImportError('cv2 is required for elastic transform but is not installed.')
         dx = cv2.GaussianBlur(dx, (17, 17), 5)
         dy = cv2.GaussianBlur(dy, (17, 17), 5)
 
         # Create coordinate grids
         x, y = np.meshgrid(np.arange(w), np.arange(h))
-        x_new = (x + dx).astype(np.float32)
-        y_new = (y + dy).astype(np.float32)
+        x_new = np.ascontiguousarray((x + dx).astype(np.float32))
+        y_new = np.ascontiguousarray((y + dy).astype(np.float32))
 
         # Apply the deformation
         if len(img_array.shape) == 3:

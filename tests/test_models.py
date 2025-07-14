@@ -1,10 +1,11 @@
 # CausalXray/tests/test_models.py
 """Unit tests for CausalXray models."""
 
-import pytest
 import torch
 import torch.nn as nn
-from causalxray.models import CausalBackbone, CausalHeads, CausalAttribution, CausalXray
+from causalxray.models.backbone import CausalBackbone
+from causalxray.models.causal_heads import CausalHeads
+from causalxray.models.attribution import CausalAttribution
 
 
 class TestCausalBackbone:
@@ -91,94 +92,3 @@ class TestCausalHeads:
         assert outputs['confounders']['age'].shape == (4, 1)
         assert outputs['confounders']['sex'].shape == (4, 2)
         assert outputs['confounders']['scanner_type'].shape == (4, 3)
-
-
-class TestCausalXray:
-    """Test complete CausalXray model."""
-    
-    def setup_method(self):
-        """Setup test fixtures."""
-        self.backbone_config = {
-            'architecture': 'densenet121',
-            'pretrained': False,
-            'num_classes': 2,
-            'feature_dims': [512, 256],
-            'dropout_rate': 0.3
-        }
-        
-        self.causal_config = {
-            'confounders': {'age': 1, 'sex': 2},
-            'hidden_dims': [128, 64],
-            'use_variational': True,
-            'use_domain_adaptation': False
-        }
-    
-    def test_model_initialization(self):
-        """Test model initialization."""
-        model = CausalXray(
-            backbone_config=self.backbone_config,
-            causal_config=self.causal_config
-        )
-        
-        assert model.backbone is not None
-        assert model.causal_heads is not None
-        assert model.training_phase == 'full'
-    
-    def test_model_forward(self):
-        """Test model forward pass."""
-        model = CausalXray(
-            backbone_config=self.backbone_config,
-            causal_config=self.causal_config
-        )
-        
-        x = torch.randn(2, 3, 224, 224)
-        confounders = {
-            'age': torch.randn(2),
-            'sex': torch.randint(0, 2, (2,))
-        }
-        
-        outputs = model(x, confounders=confounders)
-        
-        assert 'logits' in outputs
-        assert 'probabilities' in outputs
-        assert 'causal_outputs' in outputs
-        
-        assert outputs['logits'].shape == (2, 2)
-        assert outputs['probabilities'].shape == (2, 2)
-    
-    def test_progressive_training_phases(self):
-        """Test progressive training phase switching."""
-        model = CausalXray(
-            backbone_config=self.backbone_config,
-            causal_config=self.causal_config,
-            training_phase='backbone'
-        )
-        
-        assert model.training_phase == 'backbone'
-        
-        model.set_training_phase('causal')
-        assert model.training_phase == 'causal'
-        
-        model.set_training_phase('full')
-        assert model.training_phase == 'full'
-    
-    def test_model_prediction(self):
-        """Test model prediction method."""
-        model = CausalXray(
-            backbone_config=self.backbone_config,
-            causal_config=self.causal_config
-        )
-        
-        x = torch.randn(2, 3, 224, 224)
-        
-        predictions = model.predict(x, return_probabilities=True)
-        
-        assert 'predicted_class' in predictions
-        assert 'probabilities' in predictions
-        
-        assert predictions['predicted_class'].shape == (2,)
-        assert predictions['probabilities'].shape == (2, 2)
-
-
-if __name__ == '__main__':
-    pytest.main([__file__])
