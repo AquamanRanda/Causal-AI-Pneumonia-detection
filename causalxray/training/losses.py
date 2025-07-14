@@ -171,21 +171,16 @@ class FocalLoss(nn.Module):
         """
         # Compute cross entropy
         ce_loss = F.cross_entropy(inputs, targets, reduction='none')
-
-        # Compute p_t
         pt = torch.exp(-ce_loss)
-
         # Compute alpha term
         if isinstance(self.alpha, torch.Tensor):
             if self.alpha.device != targets.device:
                 self.alpha = self.alpha.to(targets.device)
             alpha_t = self.alpha[targets]
         else:
-            alpha_t = self.alpha
-
+            alpha_t = torch.tensor(self.alpha, device=targets.device) if isinstance(self.alpha, (float, int)) else torch.tensor(self.alpha, device=targets.device)[targets]
         # Compute focal loss
         focal_loss = alpha_t * (1 - pt) ** self.gamma * ce_loss
-
         # Apply reduction
         if self.reduction == 'mean':
             return focal_loss.mean()
@@ -225,38 +220,36 @@ class DisentanglementLoss(nn.Module):
         Returns:
             Total disentanglement loss
         """
-        total_loss = 0.0
-
+        total_loss = torch.tensor(0.0, device=next(iter(true_confounders.values())).device if true_confounders else 'cpu')
         # Confounder prediction losses
         if 'confounders' in causal_outputs:
-            for confounder_name, predictions in causal_outputs['confounders'].items():
+            confounders = causal_outputs['confounders']
+            if not isinstance(confounders, dict):
+                raise TypeError("causal_outputs['confounders'] must be a dict, got {}".format(type(confounders)))
+            for confounder_name, predictions in confounders.items():
                 if confounder_name in true_confounders:
                     true_values = true_confounders[confounder_name]
-
                     if predictions.size(1) == 1:  # Regression
                         confounder_loss = F.mse_loss(predictions.squeeze(), true_values.float())
                     else:  # Classification
                         confounder_loss = F.cross_entropy(predictions, true_values.long())
-
-                    total_loss += confounder_loss
-
+                    total_loss = total_loss + confounder_loss
         # Variational loss (KL divergence)
         if 'variational' in causal_outputs:
-            mu = causal_outputs['variational']['mu']
-            log_var = causal_outputs['variational']['log_var']
-
+            variational = causal_outputs['variational']
+            if not isinstance(variational, dict):
+                raise TypeError("causal_outputs['variational'] must be a dict, got {}".format(type(variational)))
+            mu = variational['mu']  # type: ignore
+            log_var = variational['log_var']  # type: ignore
             kl_loss = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp())
             kl_loss = kl_loss / mu.size(0)  # Normalize by batch size
-
-            total_loss += self.beta_vae * kl_loss
-
+            total_loss = total_loss + self.beta_vae * kl_loss
         # Independence constraint
         if 'causal_features' in causal_outputs:
             independence_loss = self._compute_independence_loss(
                 causal_outputs['causal_features']
             )
-            total_loss += self.independence_weight * independence_loss
-
+            total_loss = total_loss + self.independence_weight * independence_loss
         return total_loss
 
     def _compute_independence_loss(self, features: torch.Tensor) -> torch.Tensor:
@@ -342,22 +335,21 @@ class AttributionConsistencyLoss(nn.Module):
         """
         if len(attributions) < 2:
             return torch.tensor(0.0, device=next(iter(attributions.values())).device)
-
-        consistency_loss = 0.0
+        consistency_loss = torch.tensor(0.0, device=next(iter(attributions.values())).device)
         count = 0
         methods = list(attributions.keys())
         for i in range(len(methods)):
             for j in range(i + 1, len(methods)):
                 attr1 = attributions[methods[i]]
                 attr2 = attributions[methods[j]]
-                # Normalize attributions
                 attr1_norm = F.normalize(attr1.flatten(1), p=2, dim=1)
                 attr2_norm = F.normalize(attr2.flatten(1), p=2, dim=1)
-                # Cosine similarity loss
                 sim = F.cosine_similarity(attr1_norm, attr2_norm, dim=1)
-                consistency_loss += (1 - sim).mean()
+                consistency_loss = consistency_loss.add((1 - sim).mean())
                 count += 1
-        return consistency_loss / max(count, 1)
+        if count == 0:
+            return torch.tensor(0.0, device=next(iter(attributions.values())).device)
+        return consistency_loss / count
 
 
 class ContrastiveCausalLoss(nn.Module):

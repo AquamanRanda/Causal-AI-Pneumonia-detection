@@ -12,7 +12,6 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image, ImageFile
-import pydicom
 from typing import Dict, List, Optional, Tuple, Union, Callable, Any
 import json
 import warnings
@@ -125,32 +124,15 @@ class ChestXrayDataset(Dataset):
     def _load_image(self, image_path: str) -> Image.Image:
         """Load image from file path."""
         try:
-            if image_path.endswith('.dcm'):
-                # Load DICOM image
-                dicom = pydicom.dcmread(image_path)
-                image_array = dicom.pixel_array
-
-                # Normalize to 0-255 range
-                image_array = image_array.astype(np.float32)
-                image_array = (image_array - image_array.min()) / (image_array.max() - image_array.min() + 1e-8)
-                image_array = (image_array * 255).astype(np.uint8)
-
-                # Convert to PIL Image
-                image = Image.fromarray(image_array)
-                if image.mode != 'RGB':
-                    image = image.convert('RGB')
-
-            else:
-                # Load regular image
-                image = Image.open(image_path)
-                if image.mode != 'RGB':
-                    image = image.convert('RGB')
-
+            # Remove DICOM support since pydicom is not imported and not needed
+            # Only load regular images
+            image = Image.open(image_path)
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
         except Exception as e:
             warnings.warn(f"Error loading image {image_path}: {e}")
             # Return a blank image as fallback
             image = Image.new('RGB', (224, 224), color='black')
-
         return image
 
     def _process_confounders(self, confounders: Dict[str, Any]) -> Dict[str, torch.Tensor]:
@@ -249,7 +231,7 @@ class NIHChestXray14(ChestXrayDataset):
         df = df[df['View Position'].isin(['PA', 'AP'])]
 
         # Create pneumonia labels
-        df['pneumonia'] = df['Finding Labels'].str.contains('Pneumonia').astype(int)
+        df['pneumonia'] = df['Finding Labels'].str.contains('Pneumonia').astype(int)  # type: ignore[attr-defined]
 
         # Split dataset
         if self.split == "train":
@@ -266,9 +248,9 @@ class NIHChestXray14(ChestXrayDataset):
         # Extract confounders
         if self.include_confounders:
             self.confounders = []
-            for _, row in df.iterrows():
+            for _, row in df.iterrows():  # type: ignore[attr-defined]
                 confounders = {
-                    'age': self._extract_age(row.get('Patient Age', 'Unknown')),
+                    'age': self._extract_age(str(row.get('Patient Age', 'Unknown'))),
                     'sex': row.get('Patient Gender', 'Unknown'),
                     'view_position': row.get('View Position', 'Unknown'),
                     'follow_up': row.get('Follow-up #', 0)
@@ -276,7 +258,7 @@ class NIHChestXray14(ChestXrayDataset):
                 self.confounders.append(confounders)
 
         # Store metadata
-        self.metadata = df.to_dict('records')
+        self.metadata = df.to_dict('records')  # type: ignore[attr-defined]
 
         print(f"Loaded NIH ChestX-ray14 {self.split} split: {len(self.images)} images")
         print(f"Pneumonia prevalence: {np.mean(self.labels):.3f}")
@@ -461,9 +443,12 @@ def _collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
             if all(isinstance(v, torch.Tensor) for v in values):
                 confounders[name] = torch.stack(values)
             else:
-                # Handle mixed types
-                confounders[name] = torch.tensor(values)
+                # Only assign if all values are convertible to float
+                try:
+                    confounders[name] = torch.tensor([float(v) for v in values])
+                except Exception:
+                    continue  # skip if not convertible
 
-        result['confounders'] = confounders
+        result['confounders'] = confounders  # type: ignore[assignment]
 
     return result

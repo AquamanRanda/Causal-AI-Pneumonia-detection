@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from typing import Dict, List, Optional, Tuple, Union, Callable
 import numpy as np
 from scipy import ndimage
-from captum.attr import IntegratedGradients, GradCAM, LayerConductance
+from captum.attr import IntegratedGradients, LayerGradCam
 
 
 class CausalAttribution(nn.Module):
@@ -50,7 +50,7 @@ class CausalAttribution(nn.Module):
         # Initialize attribution methods
         self.attributors = {}
         if 'gradcam' in attribution_methods:
-            self.attributors['gradcam'] = GradCAM(model, model.backbone.backbone.features[-1])
+            self.attributors['gradcam'] = LayerGradCam(model, self._get_gradcam_layer(model))
         if 'integrated_gradients' in attribution_methods:
             self.attributors['integrated_gradients'] = IntegratedGradients(model)
 
@@ -78,27 +78,35 @@ class CausalAttribution(nn.Module):
         with torch.no_grad():
             model_output = self.model(x)
             if target_class is None:
-                target_class = torch.argmax(model_output['probabilities'], dim=1)
+                target_class_tensor = torch.argmax(model_output['probabilities'], dim=1)
+            else:
+                # If target_class is int, make it a tensor
+                if isinstance(target_class, int):
+                    target_class_tensor = torch.full((batch_size,), target_class, dtype=torch.long, device=device)
+                elif isinstance(target_class, torch.Tensor):
+                    target_class_tensor = target_class.to(device)
+                else:
+                    raise ValueError("target_class must be int, None, or torch.Tensor")
 
         attributions = {}
 
         # Intervention-based attribution
         if 'intervention' in self.attribution_methods:
-            intervention_attr = self._intervention_attribution(x, target_class)
+            intervention_attr = self._intervention_attribution(x, target_class_tensor)
             attributions['intervention'] = intervention_attr
 
         # Counterfactual attribution
         if 'counterfactual' in self.attribution_methods:
-            counterfactual_attr = self._counterfactual_attribution(x, target_class)
+            counterfactual_attr = self._counterfactual_attribution(x, target_class_tensor)
             attributions['counterfactual'] = counterfactual_attr
 
         # Traditional attribution methods for comparison
         if 'gradcam' in self.attribution_methods:
-            gradcam_attr = self._gradcam_attribution(x, target_class)
+            gradcam_attr = self._gradcam_attribution(x, target_class_tensor)
             attributions['gradcam'] = gradcam_attr
 
         if 'integrated_gradients' in self.attribution_methods:
-            ig_attr = self._integrated_gradients_attribution(x, target_class)
+            ig_attr = self._integrated_gradients_attribution(x, target_class_tensor)
             attributions['integrated_gradients'] = ig_attr
 
         # Aggregate attribution scores
@@ -330,8 +338,8 @@ class CausalAttribution(nn.Module):
 
     def generate_attribution_heatmap(
         self,
-        attribution: torch.Tensor,
-        original_image: torch.Tensor,
+        attribution: Union[torch.Tensor, np.ndarray],
+        original_image: Union[torch.Tensor, np.ndarray],
         colormap: str = 'jet',
         alpha: float = 0.6
     ) -> np.ndarray:
@@ -339,8 +347,8 @@ class CausalAttribution(nn.Module):
         Generate visualization heatmap overlaid on original image.
 
         Args:
-            attribution: Attribution map
-            original_image: Original input image
+            attribution: Attribution map (torch.Tensor or np.ndarray)
+            original_image: Original input image (torch.Tensor or np.ndarray)
             colormap: Colormap for heatmap
             alpha: Transparency for overlay
 
@@ -367,16 +375,36 @@ class CausalAttribution(nn.Module):
         if original_image.ndim == 3 and original_image.shape[0] in [1, 3]:
             if original_image.shape[0] == 1:
                 original_image = np.repeat(original_image, 3, axis=0)
-            original_image = original_image.transpose(1, 2, 0)
+            original_image = np.transpose(original_image, (1, 2, 0))
 
         # Normalize image
         img_norm = (original_image - original_image.min()) / (original_image.max() - original_image.min() + 1e-8)
 
         # Overlay heatmap on image
-        overlay = alpha * heatmap[..., :3] + (1 - alpha) * img_norm
+        overlay = alpha * np.array(heatmap)[..., :3] + (1 - alpha) * img_norm
         overlay = np.clip(overlay, 0, 1)
 
         return overlay
+
+    def _get_gradcam_layer(self, model: nn.Module) -> nn.Module:
+        """
+        Helper to get the last convolutional layer for GradCAM based on backbone architecture.
+        """
+        backbone = getattr(model, 'backbone', None)
+        if backbone is None:
+            raise AttributeError("Model does not have a 'backbone' attribute.")
+        # For DenseNet
+        if hasattr(backbone.backbone, 'features') and hasattr(backbone.backbone.features, 'denseblock4'):
+            return backbone.backbone.features.denseblock4
+        # For ResNet
+        if hasattr(backbone.backbone, 'layer4'):
+            return backbone.backbone.layer4
+        # Fallback: try to get the last module
+        layers = list(backbone.backbone.modules())
+        for layer in reversed(layers):
+            if isinstance(layer, nn.Conv2d):
+                return layer
+        raise AttributeError("Could not find a suitable layer for GradCAM.")
 
 
 class AttributionQualityMetrics:
@@ -413,12 +441,14 @@ class AttributionQualityMetrics:
                 )
                 correlations.append(corr)
 
-        return np.mean(correlations)
+        return float(np.mean(correlations))
 
     @staticmethod
     def attribution_sparsity(attribution: torch.Tensor, percentile: float = 90) -> float:
         """Measure sparsity of attribution (how focused it is)."""
-        threshold = torch.percentile(attribution.flatten(), percentile)
-        sparse_attr = (attribution > threshold).float()
-        sparsity = torch.sum(sparse_attr) / torch.numel(sparse_attr)
-        return sparsity.item()
+        # Use numpy percentile since torch.percentile does not exist
+        attr_np = attribution.detach().cpu().numpy()
+        threshold = np.percentile(attr_np.flatten(), percentile)
+        sparse_attr = (attr_np > threshold).astype(float)
+        sparsity = np.sum(sparse_attr) / sparse_attr.size
+        return float(sparsity)

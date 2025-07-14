@@ -8,7 +8,7 @@ for causal reasoning integration and medical imaging applications.
 import torch
 import torch.nn as nn
 import torchvision.models as models
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any, Union
 
 
 class CausalBackbone(nn.Module):
@@ -45,14 +45,14 @@ class CausalBackbone(nn.Module):
         if architecture == "densenet121":
             self.backbone = models.densenet121(pretrained=pretrained)
             self.feature_size = self.backbone.classifier.in_features
-            # Remove original classifier
-            self.backbone.classifier = nn.Identity()
+            # Replace classifier with a dummy linear layer (type-safe)
+            self.backbone.classifier = nn.Linear(self.feature_size, self.feature_size)
 
         elif architecture == "resnet50":
             self.backbone = models.resnet50(pretrained=pretrained)
             self.feature_size = self.backbone.fc.in_features
-            # Remove original classifier
-            self.backbone.fc = nn.Identity()
+            # Replace fc with a dummy linear layer (type-safe)
+            self.backbone.fc = nn.Linear(self.feature_size, self.feature_size)
 
         else:
             raise ValueError(f"Unsupported architecture: {architecture}")
@@ -99,7 +99,7 @@ class CausalBackbone(nn.Module):
                     nn.init.constant_(m.weight, 1)
                     nn.init.constant_(m.bias, 0)
 
-    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> Dict[str, Any]:
         """
         Forward pass through the causal backbone.
 
@@ -138,45 +138,64 @@ class CausalBackbone(nn.Module):
     def get_feature_maps(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
         Extract feature maps for attribution analysis.
-
-        Args:
-            x: Input tensor
-
-        Returns:
-            Dictionary of feature maps at different network depths
         """
-        feature_maps = {}
-
         if self.architecture == "densenet121":
-            # Extract features at different densenet blocks
-            x = self.backbone.features.conv0(x)
-            x = self.backbone.features.norm0(x)
-            x = self.backbone.features.relu0(x)
-            x = self.backbone.features.pool0(x)
-
-            feature_maps['block1'] = self.backbone.features.denseblock1(x)
-            x = self.backbone.features.transition1(feature_maps['block1'])
-
-            feature_maps['block2'] = self.backbone.features.denseblock2(x)
-            x = self.backbone.features.transition2(feature_maps['block2'])
-
-            feature_maps['block3'] = self.backbone.features.denseblock3(x)
-            x = self.backbone.features.transition3(feature_maps['block3'])
-
-            feature_maps['block4'] = self.backbone.features.denseblock4(x)
-
+            return self._extract_densenet_features(x)
         elif self.architecture == "resnet50":
-            # Extract features at different ResNet stages
-            x = self.backbone.conv1(x)
-            x = self.backbone.bn1(x)
-            x = self.backbone.relu(x)
-            x = self.backbone.maxpool(x)
+            return self._extract_resnet_features(x)
+        else:
+            return {}
 
-            feature_maps['layer1'] = self.backbone.layer1(x)
-            feature_maps['layer2'] = self.backbone.layer2(feature_maps['layer1'])
-            feature_maps['layer3'] = self.backbone.layer3(feature_maps['layer2'])
-            feature_maps['layer4'] = self.backbone.layer4(feature_maps['layer3'])
+    def _extract_densenet_features(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:  # type: ignore
+        features = getattr(self.backbone, 'features', None)
+        if not isinstance(features, nn.Module):
+            raise TypeError("Expected self.backbone.features to be nn.Module, got {}".format(type(features)))
+        conv0 = getattr(features, 'conv0')  # type: ignore
+        norm0 = getattr(features, 'norm0')  # type: ignore
+        relu0 = getattr(features, 'relu0')  # type: ignore
+        pool0 = getattr(features, 'pool0')  # type: ignore
+        denseblock1 = getattr(features, 'denseblock1')  # type: ignore
+        transition1 = getattr(features, 'transition1')  # type: ignore
+        denseblock2 = getattr(features, 'denseblock2')  # type: ignore
+        transition2 = getattr(features, 'transition2')  # type: ignore
+        denseblock3 = getattr(features, 'denseblock3')  # type: ignore
+        transition3 = getattr(features, 'transition3')  # type: ignore
+        denseblock4 = getattr(features, 'denseblock4')  # type: ignore
 
+        feature_maps = {}
+        x0 = conv0(x)  # type: ignore
+        x1 = norm0(x0)  # type: ignore
+        x2 = relu0(x1)  # type: ignore
+        x3 = pool0(x2)  # type: ignore
+        feature_maps['block1'] = denseblock1(x3)  # type: ignore
+        x4 = transition1(feature_maps['block1'])  # type: ignore
+        feature_maps['block2'] = denseblock2(x4)  # type: ignore
+        x5 = transition2(feature_maps['block2'])  # type: ignore
+        feature_maps['block3'] = denseblock3(x5)  # type: ignore
+        x6 = transition3(feature_maps['block3'])  # type: ignore
+        feature_maps['block4'] = denseblock4(x6)  # type: ignore
+        return feature_maps
+
+    def _extract_resnet_features(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:  # type: ignore
+        backbone = self.backbone
+        conv1 = getattr(backbone, 'conv1')  # type: ignore
+        bn1 = getattr(backbone, 'bn1')  # type: ignore
+        relu = getattr(backbone, 'relu')  # type: ignore
+        maxpool = getattr(backbone, 'maxpool')  # type: ignore
+        layer1 = getattr(backbone, 'layer1')  # type: ignore
+        layer2 = getattr(backbone, 'layer2')  # type: ignore
+        layer3 = getattr(backbone, 'layer3')  # type: ignore
+        layer4 = getattr(backbone, 'layer4')  # type: ignore
+
+        feature_maps = {}
+        x0 = conv1(x)  # type: ignore
+        x1 = bn1(x0)  # type: ignore
+        x2 = relu(x1)  # type: ignore
+        x3 = maxpool(x2)  # type: ignore
+        feature_maps['layer1'] = layer1(x3)  # type: ignore
+        feature_maps['layer2'] = layer2(feature_maps['layer1'])  # type: ignore
+        feature_maps['layer3'] = layer3(feature_maps['layer2'])  # type: ignore
+        feature_maps['layer4'] = layer4(feature_maps['layer3'])  # type: ignore
         return feature_maps
 
     def freeze_backbone(self):

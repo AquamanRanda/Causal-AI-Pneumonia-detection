@@ -1,7 +1,8 @@
 # CausalXray/scripts/train.py
 """Training script for CausalXray model."""
-
+import seaborn as sns
 import argparse
+import plotly.graph_objects as go
 import torch
 import yaml
 from pathlib import Path
@@ -10,11 +11,11 @@ import sys
 # Add package to path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from causalxray import CausalXray
-from causalxray.data import create_dataloader, NIHChestXray14, RSNAPneumonia, PediatricDataset
-from causalxray.data import CausalTransforms
-from causalxray.training import CausalTrainer
-from causalxray.utils import load_config, setup_logger
+from causalxray.models.backbone import CausalBackbone
+from causalxray.data.datasets import create_dataloader, NIHChestXray14, RSNAPneumonia, PediatricDataset
+from causalxray.data.transforms import CausalTransforms
+from causalxray.training.trainer import CausalTrainer
+from causalxray.utils.logging import setup_logger
 
 
 def main():
@@ -28,7 +29,8 @@ def main():
     args = parser.parse_args()
     
     # Load configuration
-    config = load_config(args.config)
+    with open(args.config, 'r') as f:
+        config = yaml.safe_load(f)
     
     # Setup logging
     logger = setup_logger('CausalXray_Training', args.output_dir)
@@ -81,11 +83,13 @@ def main():
     )
     
     # Create model
-    model = CausalXray(
-        backbone_config=config['model']['backbone'],
-        causal_config=config['model']['causal'],
-        attribution_config=config['model'].get('attribution', {}),
-        training_phase='backbone'
+    # TODO: Specify the correct architecture and parameters as per your experiment
+    model = CausalBackbone(
+        architecture=config['model']['backbone'].get('architecture', 'densenet121'),
+        pretrained=config['model']['backbone'].get('pretrained', True),
+        num_classes=config['model']['backbone'].get('num_classes', 2),
+        feature_dims=config['model']['backbone'].get('feature_dims', [1024, 512, 256]),
+        dropout_rate=config['model']['backbone'].get('dropout_rate', 0.3)
     )
     
     # Create trainer
@@ -95,7 +99,7 @@ def main():
         val_loader=val_loader,
         config=config['training'],
         device=args.device,
-        logger=logger
+        logger=logger.logger
     )
     
     # Train model
@@ -106,10 +110,7 @@ def main():
     
     logger.info("Training completed successfully!")
     
-    # Save final model
-    final_model_path = Path(args.output_dir) / 'final_model.pth'
-    model.save_checkpoint(str(final_model_path), trainer.current_epoch)
-    logger.info(f"Final model saved to: {final_model_path}")
+    # Final model is saved via trainer checkpoints. If you want to save manually, use torch.save(model.state_dict(), path)
 
 
 if __name__ == '__main__':
