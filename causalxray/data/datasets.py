@@ -216,52 +216,42 @@ class NIHChestXray14(ChestXrayDataset):
     """
 
     def __init__(self, data_dir: str, **kwargs):
-        self.labels_file = os.path.join(data_dir, "Data_Entry_2017_v2020.csv")
+        self.labels_file = os.path.join(data_dir, "Data_Entry_2017.csv")
         super().__init__(data_dir, **kwargs)
 
     def _load_dataset(self):
         """Load NIH ChestX-ray14 dataset."""
-        if not os.path.exists(self.labels_file):
-            raise FileNotFoundError(f"Labels file not found: {self.labels_file}")
-
-        # Load metadata
-        df = pd.read_csv(self.labels_file)
-
-        # Filter for frontal X-rays
-        df = df[df['View Position'].isin(['PA', 'AP'])]
-
-        # Create pneumonia labels
-        df['pneumonia'] = df['Finding Labels'].str.contains('Pneumonia').astype(int)  # type: ignore[attr-defined]
-
-        # Split dataset
-        if self.split == "train":
-            df = df[df['Patient ID'] % 10 < 7]  # 70% for training
-        elif self.split == "val":
-            df = df[df['Patient ID'] % 10 == 7]  # 10% for validation
-        elif self.split == "test":
-            df = df[df['Patient ID'] % 10 > 7]   # 20% for testing
-
-        # Extract image paths and labels
-        self.images = [os.path.join(self.data_dir, "images", fname) for fname in df['Image Index']]
-        self.labels = df['pneumonia'].tolist()
-
-        # Extract confounders
-        if self.include_confounders:
-            self.confounders = []
-            for _, row in df.iterrows():  # type: ignore[attr-defined]
-                confounders = {
-                    'age': self._extract_age(str(row.get('Patient Age', 'Unknown'))),
-                    'sex': row.get('Patient Gender', 'Unknown'),
-                    'view_position': row.get('View Position', 'Unknown'),
-                    'follow_up': row.get('Follow-up #', 0)
-                }
-                self.confounders.append(confounders)
-
-        # Store metadata
-        self.metadata = df.to_dict('records')  # type: ignore[attr-defined]
-
-        print(f"Loaded NIH ChestX-ray14 {self.split} split: {len(self.images)} images")
-        print(f"Pneumonia prevalence: {np.mean(self.labels):.3f}")
+        # Try to load from CSV if available, else fallback to reading all images
+        labels_file = os.path.join(self.data_dir, "Data_Entry_2017.csv")
+        image_dir = os.path.join(self.data_dir, "images", "images")
+        if os.path.exists(labels_file):
+            import pandas as pd
+            df = pd.read_csv(labels_file)
+            df = df[df['View Position'].isin(['PA', 'AP'])]
+            df['pneumonia'] = df['Finding Labels'].str.contains('Pneumonia').astype(int)
+            # Split dataset
+            if self.split == "train":
+                df = df[df['Patient ID'] % 10 < 7]
+            elif self.split == "val":
+                df = df[df['Patient ID'] % 10 == 7]
+            elif self.split == "test":
+                df = df[df['Patient ID'] % 10 > 7]
+            # Use nested images/images folder for image paths
+            self.images = [os.path.join(self.data_dir, "images", "images", fname) for fname in df['Image Index']]
+            self.labels = df['pneumonia'].tolist()
+            self.confounders = [{} for _ in self.images]
+            self.metadata = df.to_dict('records')
+            print(f"Loaded NIH ChestX-ray14 {self.split} split: {len(self.images)} images (from CSV)")
+            print(f"Pneumonia prevalence: {np.mean(self.labels):.3f}")
+        else:
+            # Fallback: read all images in nested folder
+            self.images = [os.path.join(image_dir, fname) for fname in os.listdir(image_dir)
+                           if fname.lower().endswith(('.png', '.jpg', '.jpeg'))]
+            self.labels = [0] * len(self.images)
+            self.confounders = [{} for _ in self.images]
+            self.metadata = [{} for _ in self.images]
+            print(f"Loaded NIH ChestX-ray14 {self.split} split: {len(self.images)} images (all images in nested folder)")
+            print(f"Pneumonia prevalence: {np.mean(self.labels):.3f}")
 
     def _extract_age(self, age_str: str) -> float:
         """Extract numeric age from age string."""

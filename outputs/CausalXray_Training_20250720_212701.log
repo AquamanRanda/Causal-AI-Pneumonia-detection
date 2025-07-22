@@ -1,0 +1,5 @@
+2025-07-20 21:27:01,571 - CausalXray_Training - INFO - _setup_tensorboard:111 - TensorBoard logging enabled: CausalXray\outputs\tensorboard
+2025-07-20 21:27:01,571 - CausalXray_Training - INFO - info:326 - Starting CausalXray training with config: CausalXray/configs/causalxray_nih.yaml
+2025-07-20 21:27:09,249 - CausalXray_Training - INFO - train:172 - Starting training for 150 epochs
+2025-07-20 21:27:09,249 - CausalXray_Training - INFO - train:173 - Progressive training phases: [50, 50, 50]
+2025-07-20 21:27:09,249 - CausalXray_Training - INFO - train:186 - Switched to training phase: backbone

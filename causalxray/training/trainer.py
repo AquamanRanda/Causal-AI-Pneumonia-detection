@@ -69,6 +69,8 @@ class CausalTrainer:
 
         # Progressive training configuration
         self.progressive_config = config.get('progressive_training', {})
+        if not isinstance(self.progressive_config, dict):
+            self.progressive_config = {}
         self.phase_epochs = self.progressive_config.get('phase_epochs', [50, 50, 50])
 
         # Logging and checkpointing
@@ -83,7 +85,12 @@ class CausalTrainer:
     def _setup_optimizer(self) -> optim.Optimizer:
         """Setup optimizer based on configuration."""
         optimizer_config = self.config.get('optimizer', {})
-        optimizer_type = optimizer_config.get('type', 'adam')
+        # Support both dict and str for optimizer config
+        if isinstance(optimizer_config, str):
+            optimizer_type = optimizer_config
+            optimizer_config = {}
+        else:
+            optimizer_type = optimizer_config.get('type', 'adam')
 
         if optimizer_type.lower() == 'adam':
             return optim.Adam(
@@ -112,10 +119,15 @@ class CausalTrainer:
     def _setup_scheduler(self) -> Optional[Any]:
         """Setup learning rate scheduler."""
         scheduler_config = self.config.get('scheduler', {})
+        # Support both dict and str for scheduler config
+        if isinstance(scheduler_config, str):
+            scheduler_type = scheduler_config
+            scheduler_config = {}
+        else:
+            scheduler_type = scheduler_config.get('type', 'cosine')
+
         if not scheduler_config.get('enabled', False):
             return None
-
-        scheduler_type = scheduler_config.get('type', 'cosine')
 
         if scheduler_type == 'cosine':
             return optim.lr_scheduler.CosineAnnealingLR(

@@ -24,9 +24,15 @@ def main():
     parser.add_argument('--data_dir', type=str, required=True, help='Data directory')
     parser.add_argument('--output_dir', type=str, default='./outputs', help='Output directory')
     parser.add_argument('--resume', type=str, help='Checkpoint to resume from')
-    parser.add_argument('--device', type=str, default='cuda', help='Device to use')
+    parser.add_argument('--device', type=str, default=None, help='Device to use (cuda or cpu)')
     
     args = parser.parse_args()
+
+    # Set device
+    if args.device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    else:
+        device = args.device
     
     # Load configuration
     with open(args.config, 'r') as f:
@@ -49,8 +55,8 @@ def main():
         raise ValueError(f"Unknown dataset: {dataset_name}")
     
     # Create transforms
-    train_transforms = CausalTransforms(mode='train', **config['data']['transforms'])
-    val_transforms = CausalTransforms(mode='val', **config['data']['transforms'])
+    train_transforms = CausalTransforms(mode='train')
+    val_transforms = CausalTransforms(mode='val')
     
     # Create datasets
     train_dataset = dataset_class(
@@ -83,13 +89,27 @@ def main():
     )
     
     # Create model
-    # TODO: Specify the correct architecture and parameters as per your experiment
+    # Support both dict and str for config['model']['backbone']
+    backbone_cfg = config['model']['backbone']
+    if isinstance(backbone_cfg, dict):
+        architecture = backbone_cfg.get('architecture', 'densenet121')
+        pretrained = backbone_cfg.get('pretrained', True)
+        num_classes = backbone_cfg.get('num_classes', 2)
+        feature_dims = backbone_cfg.get('feature_dims', [1024, 512, 256])
+        dropout_rate = backbone_cfg.get('dropout_rate', 0.3)
+    else:
+        architecture = backbone_cfg
+        pretrained = True
+        num_classes = 2
+        feature_dims = [1024, 512, 256]
+        dropout_rate = 0.3
+
     model = CausalBackbone(
-        architecture=config['model']['backbone'].get('architecture', 'densenet121'),
-        pretrained=config['model']['backbone'].get('pretrained', True),
-        num_classes=config['model']['backbone'].get('num_classes', 2),
-        feature_dims=config['model']['backbone'].get('feature_dims', [1024, 512, 256]),
-        dropout_rate=config['model']['backbone'].get('dropout_rate', 0.3)
+        architecture=architecture,
+        pretrained=pretrained,
+        num_classes=num_classes,
+        feature_dims=feature_dims,
+        dropout_rate=dropout_rate
     )
     
     # Create trainer
@@ -98,7 +118,7 @@ def main():
         train_loader=train_loader,
         val_loader=val_loader,
         config=config['training'],
-        device=args.device,
+        device=device,
         logger=logger.logger
     )
     

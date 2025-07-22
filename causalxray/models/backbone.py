@@ -43,13 +43,21 @@ class CausalBackbone(nn.Module):
 
         # Initialize base CNN architecture
         if architecture == "densenet121":
-            self.backbone = models.densenet121(pretrained=pretrained)
+            if pretrained:
+                weights = models.DenseNet121_Weights.DEFAULT
+            else:
+                weights = None
+            self.backbone = models.densenet121(weights=weights)
             self.feature_size = self.backbone.classifier.in_features
             # Replace classifier with a dummy linear layer (type-safe)
             self.backbone.classifier = nn.Linear(self.feature_size, self.feature_size)
 
         elif architecture == "resnet50":
-            self.backbone = models.resnet50(pretrained=pretrained)
+            if pretrained:
+                weights = models.ResNet50_Weights.DEFAULT
+            else:
+                weights = None
+            self.backbone = models.resnet50(weights=weights)
             self.feature_size = self.backbone.fc.in_features
             # Replace fc with a dummy linear layer (type-safe)
             self.backbone.fc = nn.Linear(self.feature_size, self.feature_size)
@@ -99,12 +107,13 @@ class CausalBackbone(nn.Module):
                     nn.init.constant_(m.weight, 1)
                     nn.init.constant_(m.bias, 0)
 
-    def forward(self, x: torch.Tensor) -> Dict[str, Any]:
+    def forward(self, x: torch.Tensor, confounders=None) -> Dict[str, Any]:
         """
         Forward pass through the causal backbone.
 
         Args:
             x: Input tensor of shape (batch_size, channels, height, width)
+            confounders: Optional confounder data (ignored in backbone)
 
         Returns:
             Dictionary containing:
@@ -134,6 +143,23 @@ class CausalBackbone(nn.Module):
             'logits': logits,
             'probabilities': probabilities
         }
+
+    def compute_loss(self, outputs, labels, confounders=None, loss_weights=None):
+        """
+        Compute classification loss for CausalBackbone.
+
+        Args:
+            outputs: Model outputs dictionary (must contain 'logits')
+            labels: Ground truth labels
+            confounders: Optional confounder data (ignored here)
+            loss_weights: Optional dict of loss weights (ignored here)
+
+        Returns:
+            Dictionary with 'total_loss' and any other metrics you want to log.
+        """
+        criterion = torch.nn.CrossEntropyLoss()
+        total_loss = criterion(outputs['logits'], labels)
+        return {'total_loss': total_loss}
 
     def get_feature_maps(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
