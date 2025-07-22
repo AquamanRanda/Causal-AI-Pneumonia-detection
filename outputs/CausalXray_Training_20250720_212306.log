@@ -1,0 +1,2 @@
+2025-07-20 21:23:06,896 - CausalXray_Training - INFO - _setup_tensorboard:111 - TensorBoard logging enabled: CausalXray\outputs\tensorboard
+2025-07-20 21:23:06,896 - CausalXray_Training - INFO - info:326 - Starting CausalXray training with config: CausalXray/configs/causalxray_nih.yaml

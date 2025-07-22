@@ -67,12 +67,17 @@ training:
 
 data:
   data_dir: "./data/nih_chestxray14"
-  datasets: ["nih"]
+  dataset: nih
   image_size: [224, 224]
   normalize: true
   augmentation: true
   num_workers: 4
   pin_memory: true
+  transforms:
+    resize: [224, 224]
+    horizontal_flip: true
+    rotation: 10
+    color_jitter: true
 
 # Loss configuration
 loss:
