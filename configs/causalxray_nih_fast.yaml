@@ -1,0 +1,124 @@
+# CausalXray Fast Training Configuration for NIH ChestX-ray14 Dataset
+experiment_name: "causalxray_nih_fast"
+output_dir: "./experiments"
+log_dir: "./logs"
+checkpoint_dir: "./checkpoints"
+device: "cuda"
+random_seed: 42
+
+model:
+  backbone: "densenet121"
+  pretrained: true
+  num_classes: 2
+  feature_dims: [512, 256]  # Reduced for speed
+  dropout_rate: 0.2  # Reduced for speed
+
+causal:
+  confounders:
+    age: 1
+    sex: 2
+    view_position: 3
+    follow_up: 1
+  hidden_dims: [256, 128]  # Reduced for speed
+  dropout_rate: 0.2  # Reduced for speed
+  use_variational: false  # Disabled for speed
+  use_domain_adaptation: false  # Disabled for speed
+  num_domains: 3
+  use_causal_graph: false  # Disabled for speed
+
+  # Simplified causal graph structure
+  graph_variables: ["image_features", "age", "sex", "view_position", "pneumonia"]
+  causal_graph:
+    image_features: []
+    age: []
+    sex: []
+    view_position: []
+    pneumonia: ["image_features", "age", "sex"]
+  variable_dims:
+    image_features: 256
+    age: 1
+    sex: 2
+    view_position: 3
+    pneumonia: 2
+
+training:
+  batch_size: 64  # Increased for speed (adjust based on GPU memory)
+  num_epochs: 50  # Reduced from 150
+  learning_rate: 0.002  # Slightly increased for faster convergence
+  weight_decay: 0.0001
+  optimizer: "adam"
+  scheduler: "step"  # Changed to step for faster convergence
+  grad_clip: 1.0
+
+  # Reduced progressive training strategy
+  progressive_training: true
+  phase_epochs: [20, 15, 15]  # Reduced from [50, 50, 50]
+
+  # Simplified loss weights for speed
+  loss_weights:
+    classification: 1.0
+    disentanglement: 0.1  # Reduced
+    domain: 0.0  # Disabled
+    attribution: 0.1  # Reduced
+    graph: 0.0  # Disabled
+
+  early_stopping: true
+  patience: 15  # Reduced from 25
+  min_delta: 0.001  # Increased for faster stopping
+
+data:
+  data_dir: "./data/nih_chestxray14"
+  dataset: nih
+  image_size: [224, 224]
+  normalize: true
+  augmentation: true
+  num_workers: 8  # Increased for faster data loading
+  pin_memory: true
+  # Simplified transforms for speed
+  transforms:
+    resize: [224, 224]
+    horizontal_flip: true
+    rotation: 5  # Reduced from 10
+    color_jitter: false  # Disabled for speed
+
+# Simplified loss configuration
+loss:
+  focal_alpha: 1.0
+  focal_gamma: 2.0
+  weights:
+    classification: 1.0
+    disentanglement: 0.1  # Reduced
+    domain: 0.0  # Disabled
+    attribution: 0.1  # Reduced
+
+  # Simplified disentanglement loss
+  disentanglement:
+    beta_vae: 0.5  # Reduced from 1.0
+    independence_weight: 0.05  # Reduced from 0.1
+
+# Optimizer configuration
+optimizer:
+  type: "adam"
+  lr: 0.002  # Increased for faster convergence
+  weight_decay: 0.0001
+  betas: [0.9, 0.999]
+
+# Faster scheduler configuration
+scheduler:
+  enabled: true
+  type: "step"  # Changed from "cosine"
+  step_size: 15  # New parameter
+  gamma: 0.5  # New parameter
+
+# Simplified attribution configuration
+attribution:
+  patch_size: 32  # Increased for speed
+  attribution_methods: ["intervention"]  # Reduced to just one method
+
+# Logging configuration
+logging:
+  use_tensorboard: true
+  use_wandb: false
+  wandb_config:
+    project: "causalxray"
+    tags: ["nih", "pneumonia", "causal", "fast"] 
