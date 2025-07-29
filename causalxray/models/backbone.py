@@ -122,8 +122,20 @@ class CausalBackbone(nn.Module):
                 - 'logits': Classification logits
                 - 'probabilities': Softmax probabilities
         """
-        # Extract raw backbone features
-        raw_features = self.backbone(x)
+        # Extract raw backbone features (before the dummy classifier)
+        # Get features from the backbone without the classifier
+        if self.architecture == "densenet121":
+            # Extract features from DenseNet before the classifier
+            features = self.backbone.features(x)
+            # Global average pooling
+            features = torch.nn.functional.adaptive_avg_pool2d(features, (1, 1))
+            raw_features = torch.flatten(features, 1)
+        elif self.architecture == "resnet50":
+            # Extract features from ResNet before the fc layer
+            features = self.backbone(x)
+            raw_features = features
+        else:
+            raw_features = self.backbone(x)
 
         # Process through causal layers
         causal_features = []
@@ -138,7 +150,7 @@ class CausalBackbone(nn.Module):
         probabilities = torch.softmax(logits, dim=1)
 
         return {
-            'features': raw_features,
+            'features': raw_features,  # Raw backbone features (1024-dimensional)
             'causal_features': causal_features,
             'logits': logits,
             'probabilities': probabilities

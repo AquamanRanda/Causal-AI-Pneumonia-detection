@@ -15,6 +15,7 @@ from pathlib import Path
 import json
 import time
 from collections import defaultdict
+import numpy as np
 
 
 class CausalLogger:
@@ -265,11 +266,27 @@ class CausalLogger:
 
         if self.tb_writer:
             import matplotlib.pyplot as plt
-            import seaborn as sns
 
             fig, ax = plt.subplots(figsize=(8, 6))
-            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-                       xticklabels=class_names, yticklabels=class_names, ax=ax)
+            
+            # Normalize confusion matrix
+            cm_norm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+            
+            # Create heatmap using matplotlib
+            im = ax.imshow(cm_norm, cmap='Blues')
+            
+            # Add text annotations
+            for i in range(len(class_names)):
+                for j in range(len(class_names)):
+                    text = ax.text(j, i, f'{cm[i, j]}',
+                               ha="center", va="center", color="black")
+            
+            # Set tick labels
+            ax.set_xticks(range(len(class_names)))
+            ax.set_xticklabels(class_names)
+            ax.set_yticks(range(len(class_names)))
+            ax.set_yticklabels(class_names)
+            
             ax.set_xlabel('Predicted')
             ax.set_ylabel('Actual')
             ax.set_title('Confusion Matrix')

@@ -9,10 +9,21 @@ establish causal relationships between image features and diagnostic outcomes.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Dict, List, Optional, Tuple, Union, Callable
+from typing import Dict, List, Optional, Tuple, Union, Callable, Any
 import numpy as np
 from scipy import ndimage
-from captum.attr import IntegratedGradients, LayerGradCam, LayerConductance
+
+# Optional imports
+try:
+    from captum.attr import IntegratedGradients, LayerGradCam, LayerConductance
+    CAPTUM_AVAILABLE = True
+except ImportError:
+    CAPTUM_AVAILABLE = False
+    print("Warning: captum not available. Some attribution methods will be disabled.")
+
+# Import the other model components
+from .backbone import CausalBackbone
+from .causal_heads import CausalHeads
 
 
 class CausalAttribution(nn.Module):
@@ -49,9 +60,9 @@ class CausalAttribution(nn.Module):
 
         # Initialize attribution methods
         self.attributors = {}
-        if 'gradcam' in attribution_methods:
+        if 'gradcam' in attribution_methods and CAPTUM_AVAILABLE:
             self.attributors['gradcam'] = LayerGradCam(model, self._get_gradcam_layer(model))
-        if 'integrated_gradients' in attribution_methods:
+        if 'integrated_gradients' in attribution_methods and CAPTUM_AVAILABLE:
             self.attributors['integrated_gradients'] = IntegratedGradients(model)
 
     def forward(
@@ -99,18 +110,20 @@ class CausalAttribution(nn.Module):
             counterfactual_attr = self._counterfactual_attribution(x, target_class_tensor)
             attributions['counterfactual'] = counterfactual_attr
 
-        # Traditional attribution methods for comparison
+        # GradCAM attribution
         if 'gradcam' in self.attribution_methods:
             gradcam_attr = self._gradcam_attribution(x, target_class_tensor)
             attributions['gradcam'] = gradcam_attr
 
+        # Integrated gradients attribution
         if 'integrated_gradients' in self.attribution_methods:
             ig_attr = self._integrated_gradients_attribution(x, target_class_tensor)
             attributions['integrated_gradients'] = ig_attr
 
-        # Aggregate attribution scores
-        aggregated_attr = self._aggregate_attributions(attributions)
-        attributions['aggregated'] = aggregated_attr
+        # Aggregate attributions if multiple methods
+        if len(attributions) > 1:
+            aggregated_attr = self._aggregate_attributions(attributions)
+            attributions['aggregated'] = aggregated_attr
 
         return attributions
 
@@ -120,50 +133,54 @@ class CausalAttribution(nn.Module):
         target_class: torch.Tensor
     ) -> torch.Tensor:
         """
-        Compute intervention-based attribution using do-calculus.
-
-        This method systematically intervenes on image patches and measures
-        the causal effect on the prediction.
+        Generate intervention-based attributions by systematically perturbing
+        image patches and measuring causal effects.
         """
         batch_size, channels, height, width = x.shape
         device = x.device
 
         # Create patch grid
-        patches_h = height // self.patch_size
-        patches_w = width // self.patch_size
+        patch_size = self.patch_size
+        num_patches_h = height // patch_size
+        num_patches_w = width // patch_size
+        total_patches = num_patches_h * num_patches_w
 
-        # Initialize attribution map
-        attribution_map = torch.zeros(batch_size, height, width, device=device)
+        # Limit number of patches if specified
+        if self.num_patches is not None:
+            total_patches = min(total_patches, self.num_patches)
 
-        # Get baseline prediction
-        with torch.no_grad():
-            baseline_output = self.model(x)
-            baseline_probs = baseline_output['probabilities']
+        attribution_map = torch.zeros((batch_size, height, width), device=device)
 
-        # Iterate through patches
-        for i in range(patches_h):
-            for j in range(patches_w):
-                # Define patch boundaries
-                h_start = i * self.patch_size
-                h_end = min((i + 1) * self.patch_size, height)
-                w_start = j * self.patch_size
-                w_end = min((j + 1) * self.patch_size, width)
+        # Sample patches for intervention
+        patch_indices = torch.randperm(num_patches_h * num_patches_w)[:total_patches]
 
-                # Create intervention (set patch to mean value)
-                x_intervened = x.clone()
-                patch_mean = torch.mean(x[:, :, h_start:h_end, w_start:w_end], dim=(2, 3), keepdim=True)
-                x_intervened[:, :, h_start:h_end, w_start:w_end] = patch_mean
+        for patch_idx in patch_indices:
+            # Calculate patch coordinates
+            patch_h = (patch_idx // num_patches_w) * patch_size
+            patch_w = (patch_idx % num_patches_w) * patch_size
 
-                # Compute intervened prediction
-                with torch.no_grad():
-                    intervened_output = self.model(x_intervened)
-                    intervened_probs = intervened_output['probabilities']
+            # Create intervened image (replace patch with normal patch)
+            intervened_x = x.clone()
+            normal_patch = self._generate_normal_patch(
+                x[:, :, patch_h:patch_h + patch_size, patch_w:patch_w + patch_size]
+            )
+            intervened_x[:, :, patch_h:patch_h + patch_size, patch_w:patch_w + patch_size] = normal_patch
 
-                # Compute causal effect
-                for b in range(batch_size):
-                    target_idx = target_class[b].item()
-                    causal_effect = baseline_probs[b, target_idx] - intervened_probs[b, target_idx]
-                    attribution_map[b, h_start:h_end, w_start:w_end] = causal_effect
+            # Get predictions for original and intervened images
+            with torch.no_grad():
+                original_output = self.model(x)
+                intervened_output = self.model(intervened_x)
+
+                original_probs = F.softmax(original_output['logits'], dim=1)
+                intervened_probs = F.softmax(intervened_output['logits'], dim=1)
+
+                # Calculate causal effect
+                causal_effect = original_probs[torch.arange(batch_size), target_class] - \
+                               intervened_probs[torch.arange(batch_size), target_class]
+
+                # Update attribution map
+                attribution_map[:, patch_h:patch_h + patch_size, patch_w:patch_w + patch_size] = \
+                    causal_effect.unsqueeze(1).unsqueeze(2).expand(-1, patch_size, patch_size)
 
         return attribution_map
 
@@ -173,187 +190,86 @@ class CausalAttribution(nn.Module):
         target_class: torch.Tensor
     ) -> torch.Tensor:
         """
-        Compute counterfactual attribution using structural causal models.
-
-        This method asks "What would the prediction be if this region appeared normal?"
+        Generate counterfactual attributions by creating alternative scenarios
+        and measuring the difference in predictions.
         """
         batch_size, channels, height, width = x.shape
         device = x.device
 
-        # Initialize attribution map
-        attribution_map = torch.zeros(batch_size, height, width, device=device)
+        # Create counterfactual image (invert the image)
+        counterfactual_x = 1.0 - x
 
-        # Get model's causal representation
+        # Get predictions for original and counterfactual images
         with torch.no_grad():
-            model_output = self.model(x)
-            causal_features = model_output.get('causal_features', [])
+            original_output = self.model(x)
+            counterfactual_output = self.model(counterfactual_x)
 
-            if not causal_features:
-                # Fallback to standard features if causal features not available
-                causal_features = [model_output['features']]
+            original_probs = F.softmax(original_output['logits'], dim=1)
+            counterfactual_probs = F.softmax(counterfactual_output['logits'], dim=1)
 
-        # Generate counterfactual scenarios
-        for patch_idx in range(0, height * width, self.patch_size**2):
-            i = (patch_idx // width) // self.patch_size
-            j = (patch_idx % width) // self.patch_size
+            # Calculate counterfactual effect
+            counterfactual_effect = original_probs[torch.arange(batch_size), target_class] - \
+                                   counterfactual_probs[torch.arange(batch_size), target_class]
 
-            if i >= height // self.patch_size or j >= width // self.patch_size:
-                continue
-
-            h_start = i * self.patch_size
-            h_end = min((i + 1) * self.patch_size, height)
-            w_start = j * self.patch_size
-            w_end = min((j + 1) * self.patch_size, width)
-
-            # Create counterfactual image (replace patch with normal tissue pattern)
-            x_counterfactual = x.clone()
-            normal_patch = self._generate_normal_patch(x[:, :, h_start:h_end, w_start:w_end])
-            x_counterfactual[:, :, h_start:h_end, w_start:w_end] = normal_patch
-
-            # Compute counterfactual prediction
-            with torch.no_grad():
-                cf_output = self.model(x_counterfactual)
-                cf_probs = cf_output['probabilities']
-                original_probs = model_output['probabilities']
-
-            # Compute counterfactual effect
-            for b in range(batch_size):
-                target_idx = target_class[b].item()
-                cf_effect = original_probs[b, target_idx] - cf_probs[b, target_idx]
-                attribution_map[b, h_start:h_end, w_start:w_end] = cf_effect
+            # Create attribution map based on counterfactual effect
+            attribution_map = counterfactual_effect.unsqueeze(1).unsqueeze(2).expand(-1, height, width)
 
         return attribution_map
 
     def _generate_normal_patch(self, patch: torch.Tensor) -> torch.Tensor:
-        """
-        Generate a 'normal' version of a patch for counterfactual analysis.
-
-        This could be implemented using various strategies:
-        - Statistical normalization
-        - Generative models
-        - Domain knowledge
-        """
-        # Simple implementation: use patch mean and add controlled noise
-        patch_mean = torch.mean(patch, dim=(2, 3), keepdim=True)
-        noise = torch.randn_like(patch) * 0.1 * torch.std(patch, dim=(2, 3), keepdim=True)
-        normal_patch = patch_mean + noise
-
-        # Clamp to valid pixel range
-        normal_patch = torch.clamp(normal_patch, 0, 1)
-
-        return normal_patch
+        """Generate a normal patch by applying Gaussian noise."""
+        normal_patch = torch.randn_like(patch) * 0.1 + 0.5
+        return torch.clamp(normal_patch, 0, 1)
 
     def _gradcam_attribution(
         self,
         x: torch.Tensor,
         target_class: torch.Tensor
     ) -> torch.Tensor:
-        """Compute GradCAM attribution for comparison."""
-        if 'gradcam' not in self.attributors:
-            return torch.zeros(x.shape[0], x.shape[2], x.shape[3], device=x.device)
+        """Generate GradCAM attributions."""
+        if not CAPTUM_AVAILABLE or 'gradcam' not in self.attributors:
+            return torch.zeros_like(x[:, 0])  # Return zero attribution if not available
 
-        attributions = []
-        for i, target in enumerate(target_class):
-            attr = self.attributors['gradcam'].attribute(
-                x[i:i+1], 
-                target=target.item()
-            )
-            attributions.append(attr.squeeze(0).squeeze(0))
-
-        return torch.stack(attributions)
+        attributions = self.attributors['gradcam'].attribute(
+            x, target=target_class
+        )
+        return attributions
 
     def _integrated_gradients_attribution(
         self,
         x: torch.Tensor,
         target_class: torch.Tensor
     ) -> torch.Tensor:
-        """Compute Integrated Gradients attribution for comparison."""
-        if 'integrated_gradients' not in self.attributors:
-            return torch.zeros_like(x)
+        """Generate Integrated Gradients attributions."""
+        if not CAPTUM_AVAILABLE or 'integrated_gradients' not in self.attributors:
+            return torch.zeros_like(x[:, 0])  # Return zero attribution if not available
 
-        # Create baseline (typically zeros or mean image)
-        baseline = torch.zeros_like(x)
-
-        attributions = []
-        for i, target in enumerate(target_class):
-            attr = self.attributors['integrated_gradients'].attribute(
-                x[i:i+1],
-                baseline[i:i+1],
-                target=target.item(),
-                n_steps=50
-            )
-            # Sum across channels for visualization
-            attr_summed = torch.sum(attr.squeeze(0), dim=0)
-            attributions.append(attr_summed)
-
-        return torch.stack(attributions)
+        attributions = self.attributors['integrated_gradients'].attribute(
+            x, target=target_class
+        )
+        return attributions
 
     def _aggregate_attributions(
         self,
         attributions: Dict[str, torch.Tensor]
     ) -> torch.Tensor:
-        """
-        Aggregate multiple attribution maps into a single consensus map.
-        """
-        if not attributions:
-            return torch.zeros(1)
-
-        # Normalize each attribution map
-        normalized_attrs = {}
-        for method, attr_map in attributions.items():
-            if method != 'aggregated':  # Avoid recursion
-                # Normalize to [0, 1] range
-                attr_min = torch.min(attr_map.view(attr_map.size(0), -1), dim=1)[0].unsqueeze(-1).unsqueeze(-1)
-                attr_max = torch.max(attr_map.view(attr_map.size(0), -1), dim=1)[0].unsqueeze(-1).unsqueeze(-1)
-
-                attr_range = attr_max - attr_min
-                attr_range[attr_range == 0] = 1  # Avoid division by zero
-
-                normalized_attr = (attr_map - attr_min) / attr_range
-                normalized_attrs[method] = normalized_attr
-
-        if not normalized_attrs:
-            return torch.zeros(1)
-
-        # Weighted average (prioritize causal methods)
-        weights = {
-            'intervention': 0.4,
-            'counterfactual': 0.4,
-            'gradcam': 0.1,
-            'integrated_gradients': 0.1
-        }
-
-        aggregated = torch.zeros_like(list(normalized_attrs.values())[0])
-        total_weight = 0.0
-
-        for method, attr_map in normalized_attrs.items():
-            weight = weights.get(method, 0.1)
-            aggregated += weight * attr_map
-            total_weight += weight
-
-        aggregated = aggregated / total_weight if total_weight > 0 else aggregated
-
-        return aggregated
+        """Aggregate multiple attribution methods using weighted average."""
+        aggregated = torch.zeros_like(list(attributions.values())[0])
+        
+        # Simple average aggregation
+        for attribution in attributions.values():
+            aggregated += attribution
+        
+        return aggregated / len(attributions)
 
     def _get_gradcam_layer(self, model: nn.Module) -> nn.Module:
-        """
-        Helper to get the last convolutional layer for GradCAM based on backbone architecture.
-        """
-        backbone = getattr(model, 'backbone', None)
-        if backbone is None:
-            raise AttributeError("Model does not have a 'backbone' attribute.")
-        # For DenseNet
-        if hasattr(backbone.backbone, 'features') and hasattr(backbone.backbone.features, 'denseblock4'):
-            return backbone.backbone.features.denseblock4
-        # For ResNet
-        if hasattr(backbone.backbone, 'layer4'):
-            return backbone.backbone.layer4
-        # Fallback: try to get the last module
-        layers = list(backbone.backbone.modules())
-        for layer in reversed(layers):
-            if isinstance(layer, nn.Conv2d):
-                return layer
-        raise AttributeError("Could not find a suitable layer for GradCAM.")
+        """Get the appropriate layer for GradCAM."""
+        # Try to find the last convolutional layer
+        for name, module in reversed(list(model.named_modules())):
+            if isinstance(module, nn.Conv2d):
+                return module
+        # Fallback to the model itself
+        return model
 
     def generate_attribution_heatmap(
         self,
@@ -363,12 +279,12 @@ class CausalAttribution(nn.Module):
         alpha: float = 0.6
     ) -> np.ndarray:
         """
-        Generate visualization heatmap overlaid on original image.
+        Generate a heatmap visualization of attributions overlaid on the original image.
 
         Args:
-            attribution: Attribution map
-            original_image: Original input image
-            colormap: Colormap for heatmap
+            attribution: Attribution map (H, W) or (B, H, W)
+            original_image: Original image (H, W) or (B, H, W)
+            colormap: Matplotlib colormap name
             alpha: Transparency for overlay
 
         Returns:
@@ -377,41 +293,52 @@ class CausalAttribution(nn.Module):
         import matplotlib.pyplot as plt
         import matplotlib.cm as cm
 
-        if torch.is_tensor(attribution):
+        # Convert to numpy if needed
+        if isinstance(attribution, torch.Tensor):
             attribution = attribution.detach().cpu().numpy()
-        if torch.is_tensor(original_image):
+        if isinstance(original_image, torch.Tensor):
             original_image = original_image.detach().cpu().numpy()
 
-        attr_norm = (attribution - attribution.min()) / (attribution.max() - attribution.min() + 1e-8)
+        # Handle batch dimension
+        if attribution.ndim == 3:
+            attribution = attribution[0]
+        if original_image.ndim == 3:
+            original_image = original_image[0]
+
+        # Normalize attribution
+        attribution = (attribution - attribution.min()) / (attribution.max() - attribution.min() + 1e-8)
+
+        # Create colormap
         cmap = cm.get_cmap(colormap)
-        heatmap = cmap(attr_norm)
+        attribution_colored = cmap(attribution)[:, :, :3]  # Remove alpha channel
 
-        if original_image.ndim == 3 and original_image.shape[0] in [1, 3]:
-            if original_image.shape[0] == 1:
-                original_image = np.repeat(original_image, 3, axis=0)
-            original_image = np.transpose(original_image, (1, 2, 0))
+        # Normalize original image
+        if original_image.max() > 1.0:
+            original_image = original_image / 255.0
 
-        img_norm = (original_image - original_image.min()) / (original_image.max() - original_image.min() + 1e-8)
-        overlay = alpha * np.array(heatmap)[..., :3] + (1 - alpha) * img_norm
-        overlay = np.clip(overlay, 0, 1)
-        return overlay
+        # Create overlay
+        if original_image.ndim == 2:
+            original_image = np.stack([original_image] * 3, axis=-1)
+
+        heatmap = alpha * attribution_colored + (1 - alpha) * original_image
+        heatmap = np.clip(heatmap, 0, 1)
+
+        return heatmap
 
 
 class AttributionQualityMetrics:
-    """
-    Metrics for evaluating the quality of causal attributions.
-    """
+    """Metrics for evaluating attribution quality and consistency."""
 
     @staticmethod
     def sensitivity_correlation(
         attribution1: torch.Tensor,
         attribution2: torch.Tensor
     ) -> float:
-        """Compute correlation between different attribution methods."""
-        attr1_flat = attribution1.flatten()
-        attr2_flat = attribution2.flatten()
-
-        correlation = torch.corrcoef(torch.stack([attr1_flat, attr2_flat]))[0, 1]
+        """Calculate correlation between two attribution methods."""
+        flat1 = attribution1.flatten()
+        flat2 = attribution2.flatten()
+        
+        correlation = torch.corrcoef(torch.stack([flat1, flat2]))[0, 1]
         return correlation.item()
 
     @staticmethod
@@ -419,25 +346,143 @@ class AttributionQualityMetrics:
         attributions: List[torch.Tensor],
         threshold: float = 0.1
     ) -> float:
-        """Measure consistency of attributions across similar inputs."""
+        """Calculate consistency across multiple attribution methods."""
         if len(attributions) < 2:
             return 1.0
-        correlations = []
-        for i in range(len(attributions)):
-            for j in range(i + 1, len(attributions)):
-                corr = AttributionQualityMetrics.sensitivity_correlation(
-                    attributions[i], attributions[j]
-                )
-                correlations.append(corr)
-        return float(np.mean(correlations))
+
+        # Binarize attributions
+        binarized = []
+        for attr in attributions:
+            binary = (attr > threshold).float()
+            binarized.append(binary.flatten())
+
+        # Calculate intersection over union
+        intersection = torch.stack(binarized).min(dim=0)[0]
+        union = torch.stack(binarized).max(dim=0)[0]
+        
+        iou = intersection.sum() / (union.sum() + 1e-8)
+        return iou.item()
 
     @staticmethod
     def attribution_sparsity(attribution: torch.Tensor, percentile: float = 90) -> float:
-        """Measure sparsity of attribution (how focused it is)."""
-        attr_np = attribution.detach().cpu().numpy()
-        threshold = np.percentile(attr_np.flatten(), percentile)
-        sparse_attr = (attr_np > threshold).astype(float)
-        sparsity = np.sum(sparse_attr) / sparse_attr.size
-        return float(sparsity)
+        """Calculate sparsity of attribution map."""
+        flat_attr = attribution.flatten()
+        threshold = torch.quantile(flat_attr, percentile / 100)
+        sparsity = (flat_attr < threshold).float().mean()
+        return sparsity.item()
 
-CausalXray = CausalAttribution
+
+class CausalXrayModel(nn.Module):
+    """
+    Main CausalXray model that combines backbone, causal heads, and attribution.
+    
+    This model implements causal reasoning for X-ray image analysis with
+    interpretable attributions and confounding variable prediction.
+    """
+
+    def __init__(
+        self,
+        backbone_config: Dict[str, Any],
+        causal_config: Dict[str, Any],
+        attribution_config: Optional[Dict[str, Any]] = None
+    ):
+        """
+        Initialize the CausalXray model.
+
+        Args:
+            backbone_config: Configuration for the backbone network
+            causal_config: Configuration for causal heads and reasoning
+            attribution_config: Configuration for attribution methods
+        """
+        super(CausalXrayModel, self).__init__()
+
+        # Initialize backbone
+        self.backbone = CausalBackbone(
+            architecture=backbone_config.get('architecture', 'densenet121'),
+            pretrained=backbone_config.get('pretrained', True),
+            num_classes=backbone_config.get('num_classes', 2),
+            feature_dims=backbone_config.get('feature_dims', [1024, 512, 256]),
+            dropout_rate=backbone_config.get('dropout_rate', 0.3)
+        )
+
+        # Initialize causal heads
+        confounders = causal_config.get('confounders', {})
+        self.causal_heads = CausalHeads(
+            input_dim=backbone_config.get('feature_dims', [1024, 512, 256])[-1],
+            confounders=confounders,
+            hidden_dims=causal_config.get('hidden_dims', [512, 256]),
+            dropout_rate=causal_config.get('dropout_rate', 0.3),
+            use_variational=causal_config.get('use_variational', True)
+        )
+
+        # Store attribution config for lazy initialization
+        self.attribution_config = attribution_config or {}
+        self.attribution = None  # Will be initialized when needed
+
+        # Model configuration
+        self.config = {
+            'backbone': backbone_config,
+            'causal': causal_config,
+            'attribution': attribution_config
+        }
+
+    def forward(self, x: torch.Tensor, confounders: Optional[Dict[str, torch.Tensor]] = None) -> Dict[str, Any]:
+        """
+        Forward pass through the CausalXray model.
+
+        Args:
+            x: Input images of shape (batch_size, channels, height, width)
+            confounders: Optional confounding variables
+
+        Returns:
+            Dictionary containing model outputs
+        """
+        # Extract features from backbone
+        backbone_output = self.backbone(x, confounders)
+        # Use the final causal features (256-dimensional) for causal heads
+        features = backbone_output['causal_features'][-1]  # Get the last causal feature layer
+
+        # Process through causal heads
+        causal_output = self.causal_heads(features)
+
+        # Combine outputs
+        outputs = {
+            'logits': backbone_output['logits'],
+            'probabilities': F.softmax(backbone_output['logits'], dim=1),
+            'features': features,
+            'causal_features': causal_output.get('causal_features', features),
+            'confounder_predictions': causal_output.get('confounder_predictions', {}),
+            'latent_variables': causal_output.get('latent_variables', {})
+        }
+
+        return outputs
+
+    def predict(self, x: torch.Tensor) -> Dict[str, Any]:
+        """Make predictions on input images."""
+        self.eval()
+        with torch.no_grad():
+            return self.forward(x)
+
+    def generate_attributions(
+        self, 
+        x: torch.Tensor, 
+        target_class: Optional[int] = None
+    ) -> Dict[str, torch.Tensor]:
+        """Generate causal attributions for input images."""
+        # Initialize attribution module if not already done
+        if self.attribution is None:
+            from .attribution import CausalAttribution
+            self.attribution = CausalAttribution(
+                model=self,
+                feature_layers=self.attribution_config.get('feature_layers', ['backbone']),
+                attribution_methods=self.attribution_config.get('attribution_methods', 
+                                                             ['intervention', 'counterfactual', 'gradcam']),
+                patch_size=self.attribution_config.get('patch_size', 16),
+                num_patches=self.attribution_config.get('num_patches', None)
+            )
+        
+        return self.attribution(x, target_class=target_class)
+
+    def get_feature_maps(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """Extract feature maps from the model."""
+        return self.backbone.get_feature_maps(x)

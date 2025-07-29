@@ -46,16 +46,22 @@ class CausalHeads(nn.Module):
         self.use_variational = use_variational
 
         # Build confounder prediction heads
-        self.confounder_heads = nn.ModuleDict()
-        for confounder_name, confounder_dim in confounders.items():
-            self.confounder_heads[confounder_name] = self._build_prediction_head(
+        self.heads = nn.ModuleDict()  # Changed from confounder_heads to heads to match saved model
+        for confounder_name, confounder_config in confounders.items():
+            # Handle both integer dimensions and dictionary configurations
+            if isinstance(confounder_config, dict):
+                # If it's a dictionary, use the number of unique values as dimension
+                confounder_dim = len(confounder_config)
+            else:
+                # If it's an integer, use it directly
+                confounder_dim = confounder_config
+            
+            self.heads[confounder_name] = self._build_prediction_head(
                 input_dim, confounder_dim, hidden_dims, dropout_rate
             )
 
-        # Causal feature extractor
-        self.causal_extractor = self._build_causal_extractor(
-            input_dim, hidden_dims, dropout_rate
-        )
+        # Causal feature extractor (optional - not in saved model)
+        self.causal_extractor = None
 
         # Variational components for uncertainty quantification
         self.variational_encoder: Optional[nn.ModuleDict] = None
@@ -74,20 +80,23 @@ class CausalHeads(nn.Module):
         """Build a prediction head for a specific confounder."""
         layers = []
 
-        # Input layer
+        # Input layer (layer 0)
         layers.append(nn.Linear(input_dim, hidden_dims[0]))
-        layers.append(nn.BatchNorm1d(hidden_dims[0]))
         layers.append(nn.ReLU(inplace=True))
         layers.append(nn.Dropout(dropout_rate))
 
-        # Hidden layers
-        for i in range(len(hidden_dims) - 1):
-            layers.append(nn.Linear(hidden_dims[i], hidden_dims[i + 1]))
-            layers.append(nn.BatchNorm1d(hidden_dims[i + 1]))
+        # Hidden layer (layer 3)
+        if len(hidden_dims) > 1:
+            layers.append(nn.Linear(hidden_dims[0], hidden_dims[1]))
+            layers.append(nn.ReLU(inplace=True))
+            layers.append(nn.Dropout(dropout_rate))
+        else:
+            # If only one hidden dim, use it for the hidden layer
+            layers.append(nn.Linear(hidden_dims[0], hidden_dims[0]))
             layers.append(nn.ReLU(inplace=True))
             layers.append(nn.Dropout(dropout_rate))
 
-        # Output layer
+        # Output layer (layer 6)
         layers.append(nn.Linear(hidden_dims[-1], output_dim))
 
         return nn.Sequential(*layers)
@@ -151,14 +160,18 @@ class CausalHeads(nn.Module):
 
         # Predict confounders
         confounder_predictions: Dict[str, torch.Tensor] = {}
-        for confounder_name, head in self.confounder_heads.items():
+        for confounder_name, head in self.heads.items():
             confounder_predictions[confounder_name] = head(features)
 
         outputs['confounders'] = confounder_predictions
 
-        # Extract causal features
-        causal_features = self.causal_extractor(features)
-        outputs['causal_features'] = causal_features
+        # Extract causal features (if available)
+        if self.causal_extractor is not None:
+            causal_features = self.causal_extractor(features)
+            outputs['causal_features'] = causal_features
+        else:
+            # Use input features as causal features if no extractor
+            outputs['causal_features'] = features
 
         # Variational inference
         if self.use_variational:

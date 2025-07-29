@@ -12,7 +12,14 @@ import torch.nn.functional as F
 from typing import Dict, List, Optional, Tuple, Union, Callable
 import numpy as np
 from scipy import ndimage
-from captum.attr import IntegratedGradients, LayerGradCam
+
+# Optional imports
+try:
+    from captum.attr import IntegratedGradients, LayerGradCam
+    CAPTUM_AVAILABLE = True
+except ImportError:
+    CAPTUM_AVAILABLE = False
+    print("Warning: captum not available. Some attribution methods will be disabled.")
 
 
 class CausalAttribution(nn.Module):
@@ -49,9 +56,9 @@ class CausalAttribution(nn.Module):
 
         # Initialize attribution methods
         self.attributors = {}
-        if 'gradcam' in attribution_methods:
+        if 'gradcam' in attribution_methods and CAPTUM_AVAILABLE:
             self.attributors['gradcam'] = LayerGradCam(model, self._get_gradcam_layer(model))
-        if 'integrated_gradients' in attribution_methods:
+        if 'integrated_gradients' in attribution_methods and CAPTUM_AVAILABLE:
             self.attributors['integrated_gradients'] = IntegratedGradients(model)
 
     def forward(
@@ -101,11 +108,11 @@ class CausalAttribution(nn.Module):
             attributions['counterfactual'] = counterfactual_attr
 
         # Traditional attribution methods for comparison
-        if 'gradcam' in self.attribution_methods:
+        if 'gradcam' in self.attribution_methods and CAPTUM_AVAILABLE:
             gradcam_attr = self._gradcam_attribution(x, target_class_tensor)
             attributions['gradcam'] = gradcam_attr
 
-        if 'integrated_gradients' in self.attribution_methods:
+        if 'integrated_gradients' in self.attribution_methods and CAPTUM_AVAILABLE:
             ig_attr = self._integrated_gradients_attribution(x, target_class_tensor)
             attributions['integrated_gradients'] = ig_attr
 
@@ -189,7 +196,7 @@ class CausalAttribution(nn.Module):
             model_output = self.model(x)
             causal_features = model_output.get('causal_features', [])
 
-            if not causal_features:
+            if len(causal_features) == 0:
                 # Fallback to standard features if causal features not available
                 causal_features = [model_output['features']]
 
