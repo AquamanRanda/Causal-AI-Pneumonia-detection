@@ -317,13 +317,33 @@ class AttributionVisualizer:
                 print(f"Warning: {method_name} attribution is {type(attribution)}, skipping")
                 continue
             flat_attr = attribution.flatten()
-            axes[0].hist(flat_attr, bins=50, alpha=0.7, label=method_name, density=True)
+            
+            # Handle very small values by using log scale or different binning
+            if np.max(np.abs(flat_attr)) < 1e-6:
+                # Values are essentially zero, use linear scale with more bins
+                axes[0].hist(flat_attr, bins=100, alpha=0.7, label=f"{method_name} (near-zero)", density=True)
+            else:
+                # Normal values, use regular histogram
+                axes[0].hist(flat_attr, bins=50, alpha=0.7, label=method_name, density=True)
         
         axes[0].set_xlabel('Attribution Value')
         axes[0].set_ylabel('Density')
         axes[0].set_title('Attribution Magnitude Distribution')
         axes[0].legend()
         axes[0].grid(True, alpha=0.3)
+        
+        # Add text showing value ranges
+        value_info = []
+        for method_name, attribution in attributions.items():
+            if isinstance(attribution, np.ndarray):
+                flat_attr = attribution.flatten()
+                value_info.append(f"{method_name}: [{np.min(flat_attr):.2e}, {np.max(flat_attr):.2e}]")
+        
+        if value_info:
+            axes[0].text(0.02, 0.98, '\n'.join(value_info), 
+                        transform=axes[0].transAxes, fontsize=8,
+                        verticalalignment='top',
+                        bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.8))
         
         # 2. Attribution sparsity comparison
         sparsity_data = []
