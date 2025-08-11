@@ -1,0 +1,19 @@
+CausalXray Inference Results
+========================================
+Image: ./NormalTestxray.jpg
+
+PNEUMONIA PREDICTION:
+  Predicted Class: Normal
+  Confidence: 0.5061
+  Normal Probability: 0.5061
+  Pneumonia Probability: 0.4939
+
+CONFOUNDER PREDICTIONS:
+  Age: 55.4 years
+  Sex: Female (confidence: 0.7463)
+    Female: 0.7463
+    Male: 0.2537
+  View Position: AP (confidence: 0.7205)
+    AP: 0.7205
+    PA: 0.2795
+    Lateral: 0.0000
